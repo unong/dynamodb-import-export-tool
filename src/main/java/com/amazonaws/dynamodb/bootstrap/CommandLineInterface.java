@@ -14,24 +14,30 @@
  */
 package com.amazonaws.dynamodb.bootstrap;
 
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.dynamodb.bootstrap.constants.BootstrapConstants;
 import com.amazonaws.dynamodb.bootstrap.exception.NullReadCapacityException;
 import com.amazonaws.dynamodb.bootstrap.exception.SectionOutOfRangeException;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
+import com.amazonaws.services.dynamodbv2.model.CreateTableRequest;
+import com.amazonaws.services.dynamodbv2.model.GlobalSecondaryIndex;
+import com.amazonaws.services.dynamodbv2.model.GlobalSecondaryIndexDescription;
+import com.amazonaws.services.dynamodbv2.model.ProvisionedThroughput;
 import com.amazonaws.services.dynamodbv2.model.TableDescription;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.ParameterException;
+
+import org.apache.log4j.LogManager;
+import org.apache.log4j.Logger;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The interface that parses the arguments, and begins to transfer data from one
@@ -91,8 +97,39 @@ public class CommandLineInterface {
 
         TableDescription readTableDescription = sourceClient.describeTable(
                 sourceTable).getTable();
+
+        try {
+            TableDescription writeTableDescription = destinationClient
+                    .describeTable(destinationTable).getTable();
+        } catch (Exception e) {
+            LOGGER.warn("cannot find table on destination dynamo, so this task will make table same as source one", e);
+            Collection<GlobalSecondaryIndex> gsis = new ArrayList<>();
+            if(readTableDescription.getGlobalSecondaryIndexes() != null) {
+                for(GlobalSecondaryIndexDescription gsid : readTableDescription.getGlobalSecondaryIndexes()) {
+                    GlobalSecondaryIndex gsi = new GlobalSecondaryIndex()
+                            .withKeySchema(gsid.getKeySchema())
+                            .withIndexName(gsid.getIndexName())
+                            .withProjection(gsid.getProjection())
+                            .withProvisionedThroughput(new ProvisionedThroughput(gsid.getProvisionedThroughput().getReadCapacityUnits(), gsid.getProvisionedThroughput().getWriteCapacityUnits()))
+                            ;
+                    gsis.add(gsi);
+                }
+            }
+            CreateTableRequest request = new CreateTableRequest(
+                    readTableDescription.getTableName(),
+                    readTableDescription.getKeySchema()
+            )
+                    .withAttributeDefinitions(readTableDescription.getAttributeDefinitions())
+                    .withProvisionedThroughput(new ProvisionedThroughput(readTableDescription.getProvisionedThroughput().getReadCapacityUnits(), readTableDescription.getProvisionedThroughput().getWriteCapacityUnits()))
+                    ;
+            if(!gsis.isEmpty()) {
+                request.setGlobalSecondaryIndexes(gsis);
+            }
+            destinationClient.createTable(request);
+        }
         TableDescription writeTableDescription = destinationClient
                 .describeTable(destinationTable).getTable();
+
         int numSegments = 10;
         try {
             numSegments = DynamoDBBootstrapWorker
